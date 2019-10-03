@@ -1,6 +1,6 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use std::str;
 use std::io::Cursor;
+use std::str;
 
 const PACKET_MAX_SIZE: usize = 16384;
 const PACKET_MAX_WORDS: usize = 256;
@@ -11,59 +11,28 @@ const PACKET_SEQ_CLIENT_MASK_U32: u32 = 0x8000_0000;
 const PACKET_SEQ_RESPON_MASK_U32: u32 = 0x4000_0000;
 const PACKET_SEQ_HEADER_MASK_U32: u32 = PACKET_SEQ_CLIENT_MASK_U32 | PACKET_SEQ_RESPON_MASK_U32;
 
-////////////////////////////////////////////////////////////////////////////////
-
-macro_rules! with_some {
-    ($e:expr) => {
-        match $e {
-            Some(val) => val,
-            None => {
-                return Ok(None);
-            }
-        }
-    };
-}
-
-fn read_u32_as_bounded_usize(
-    mut buf: impl Buf,
-    min: usize,
-    max: usize,
-) -> Result<Option<usize>, PacketError> {
-    if buf.remaining() < 4 {
-        Ok(None)
-    } else {
-        let val = buf.get_u32_le() as usize;
-        if val < min || val > max {
-            return Err(PacketError::InvalidSize(val));
-        }
-        Ok(Some(val))
-    }
-}
-
-pub fn read_packet(
-    buf: &mut BytesMut,
-) -> Result<Option<Packet>, PacketError> {
-    // Return early if we can't met the packet header size.
+/// Reads a packet's wire representation from a BytesMut.
+pub fn read_packet(buf: &mut BytesMut) -> Result<Option<Packet>, PacketError> {
+    // Return early if we cannot fullfill the packet header size.
     if buf.len() < PACKET_HEADER_SIZE {
         return Ok(None);
     }
+    // Split off the packet header to a seperate buf.
     let header_buf = buf.split_to(PACKET_HEADER_SIZE);
+    // Create a cursor to read the header.
     let mut header_cur = Cursor::new(header_buf.as_ref());
-    // Read the packet seq.
+    // Read the packet sequence.
     let seq = PacketSequence::from_raw(header_cur.get_u32_le());
     // Read the packet size.
-    let size = with_some!(read_u32_as_bounded_usize(
-        &mut header_cur,
-        PACKET_HEADER_SIZE,
-        PACKET_MAX_SIZE
-    )?);
+    let size = read_u32_as_bounded_usize(&mut header_cur, PACKET_HEADER_SIZE, PACKET_MAX_SIZE)?;
     // Read the word count.
-    let word_count = with_some!(read_u32_as_bounded_usize(&mut header_cur, 0, PACKET_MAX_WORDS)?);
-    // Create container for words.
+    let word_count = read_u32_as_bounded_usize(&mut header_cur, 0, PACKET_MAX_WORDS)?;
+    // Create a container for the packet words.
     let mut words = Vec::with_capacity(word_count);
     // Calculate the body size.
     let body_size = size - PACKET_HEADER_SIZE;
     // Return early if we can't met the packet body size.
+    // We also rejoin the header buf, for another attempt.
     if buf.len() < body_size {
         buf.unsplit(header_buf);
         return Ok(None);
@@ -72,47 +41,87 @@ pub fn read_packet(
     let mut body_buf = buf.split_to(body_size);
     // Read packet words.
     for _ in 0..word_count {
+        // Validate we can read the size of the word.
+        // If a previous word claimed to be larger than it was
+        // in reality, this will ensure we don't panic.
         if body_buf.len() < 4 {
             return Err(PacketError::Malformed);
         }
+        // Split off the word size from the body buf.
         let word_size_buf = body_buf.split_to(4);
+        // Extract the word size from the word size buf.
         let word_size = read_u32_as_bounded_usize(
             &mut Cursor::new(word_size_buf.as_ref()),
             PACKET_WORD_MIN_SIZE,
-            PACKET_WORD_MAX_SIZE
-        )?.ok_or(PacketError::Malformed)?;
+            PACKET_WORD_MAX_SIZE,
+        )?;
+        // Again validate we can read the claimed size
+        // of the word, including the NULL terminator.
         if body_buf.len() < word_size + 1 {
             return Err(PacketError::Malformed);
         }
+        // Split off the word content from the body buf.
         let word_buf = body_buf.split_to(word_size);
-        // Check the trailing null character.
+        // Split off and validate we have a trailing null character.
         if body_buf.split_to(1).as_ref() != &[0] {
             return Err(PacketError::Malformed);
         }
-        words.push(PacketWord::from_raw(word_buf.freeze())?);
+        // Freeze the word bytes.
+        let word_bytes = word_buf.freeze();
+        // Push the packet word to the container.
+        words.push(PacketWord::from_bytes(word_bytes)?);
     }
     Ok(Some(Packet { seq, words }))
 }
 
-fn write_size_u32(buf: &mut BytesMut, size: usize) -> Result<(), PacketError> {
-    if size > (u32::max_value() as usize) {
-        return Err(PacketError::InvalidSize(size));
-    }
-    Ok(buf.put_u32_le(size as u32))
-}
-
+/// Writes a packet's wire representation into a BytesMut.
 pub fn write_packet(buf: &mut BytesMut, packet: Packet) -> Result<(), PacketError> {
+    // Get the total calculated packet size.
     let packet_size = packet.byte_size();
+    // Reserve the required space within the buf.
     buf.reserve(packet_size);
+    // Write the packet sequence to the buf.
     buf.put_u32_le(packet.seq.to_raw());
+    // Write the packet size to the buf.
     write_size_u32(buf, packet_size)?;
+    // Write the packet word count to the buf.
     write_size_u32(buf, packet.words.len())?;
+    // For each word:
     for word in packet.words.into_iter() {
+        // Write the word size to the buf.
         write_size_u32(buf, word.byte_size())?;
+        // Write the word content to the buf.
         buf.put(word.into_bytes());
+        // Write the NULL term to the buf.
         buf.put_u8(0);
     }
     Ok(())
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
+fn write_size_u32(buf: &mut BytesMut, size: usize) -> Result<(), PacketError> {
+    // Validate the usize will fit inside a u32.
+    if size > (u32::max_value() as usize) {
+        return Err(PacketError::InvalidSize(size));
+    }
+    // Write the size to the buf.
+    buf.put_u32_le(size as u32);
+    Ok(())
+}
+
+fn read_u32_as_bounded_usize(
+    mut buf: impl Buf,
+    min: usize,
+    max: usize,
+) -> Result<usize, PacketError> {
+    // Extract the value.
+    let val = buf.get_u32_le() as usize;
+    // Validate it is within the bounds.
+    if val < min || val > max {
+        return Err(PacketError::InvalidSize(val));
+    }
+    Ok(val)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -126,11 +135,14 @@ pub struct Packet {
 impl Packet {
     /// Calculates the total size of the packet.
     pub fn byte_size(&self) -> usize {
+        // Calculate the wire representation size of
+        // the words.
         let words_byte_size: usize = self
             .words
             .iter()
             .map(|w| w.byte_size() + PACKET_WORD_MIN_SIZE)
             .sum();
+        // Return the sum of the words and packet header.
         words_byte_size + PACKET_HEADER_SIZE
     }
 }
@@ -164,6 +176,7 @@ pub enum PacketOrigin {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+/// The sequence structure of a packet.
 #[derive(Debug)]
 pub struct PacketSequence {
     raw: u32,
@@ -222,18 +235,20 @@ impl PacketSequence {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-/// Represents a Packet word.
+/// The word structure of a packet.
 #[derive(Debug, PartialEq)]
 pub struct PacketWord {
     bytes: Bytes,
 }
 
 impl PacketWord {
+    /// Create a packet word from a UTF8 string.
     pub fn new(word: &str) -> Result<Self, PacketError> {
-        Self::from_raw(Bytes::from(word.as_bytes()))
+        Self::from_bytes(Bytes::from(word.as_bytes()))
     }
 
-    fn from_raw(bytes: Bytes) -> Result<Self, PacketError> {
+    /// Create a packet word from bytes.
+    pub fn from_bytes(bytes: Bytes) -> Result<Self, PacketError> {
         if let Some(invalid_char) = bytes.as_ref().iter().find(|b| !Self::is_valid_char(**b)) {
             Err(PacketError::InvalidWordChar(*invalid_char))
         } else {
@@ -241,19 +256,18 @@ impl PacketWord {
         }
     }
 
-    /// Checks if is in ASCII range and is not NULL.
+    /// Checks if packet word char is in ASCII range and is not NULL.
     pub fn is_valid_char(byte: u8) -> bool {
         byte != 0u8 && byte.is_ascii()
     }
 
+    /// Get the UTF8 representation of the packet word.
     pub fn as_str(&self) -> &str {
-        unsafe { str::from_utf8_unchecked(self.as_bytes()) }
+        // Safe as we validate each character on contruction.
+        unsafe { str::from_utf8_unchecked(self.as_ref()) }
     }
 
-    pub fn as_bytes(&self) -> &[u8] {
-        self.bytes.as_ref()
-    }
-
+    /// Consume the packet word as bytes.
     pub fn into_bytes(self) -> Bytes {
         self.bytes
     }
@@ -261,6 +275,12 @@ impl PacketWord {
     /// Total size of the word content.
     pub fn byte_size(&self) -> usize {
         self.bytes.len()
+    }
+}
+
+impl AsRef<[u8]> for PacketWord {
+    fn as_ref(&self) -> &[u8] {
+        self.bytes.as_ref()
     }
 }
 
