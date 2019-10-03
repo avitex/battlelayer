@@ -5,3 +5,6 @@ authors = ["avitex <theavitex@gmail.com>"]
 edition = "2018"
 
 [dependencies]
+
+bytes = "0.4"
+tokio-codec = "0.1"
