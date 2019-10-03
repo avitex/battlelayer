@@ -1,42 +1,98 @@
-use bytes::BytesMut;
-use std::io;
-use tokio_codec::{Decoder, Encoder};
+mod codec;
+mod error;
 
-use super::packet::*;
+use std::future::Future;
+use std::task::{Context, Poll};
+use std::pin::Pin;
 
-pub struct PacketCodec;
+use futures_util::future;
+use tokio_io::{AsyncRead, AsyncWrite};
+use tokio_net::{tcp::TcpStream, ToSocketAddrs};
 
-pub enum PacketCodecError {
-    Io(io::Error),
-    Packet(PacketError),
+use tower_service::Service;
+use tower_util::BoxService;
+
+use self::error::Error;
+use crate::packet::*;
+
+pub use self::codec::PacketCodec;
+pub use self::error::Error as ClientError;
+
+#[derive(Debug, Default)]
+pub struct DefaultService {
+    pub response: Response,
 }
 
-impl From<io::Error> for PacketCodecError {
-    fn from(err: io::Error) -> Self {
-        Self::Io(err)
+impl Service<Request> for DefaultService {
+    type Response = Response;
+    type Error = Error;
+    type Future = Pin<Box<future::Ready<Result<Response, Error>>>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, request: Request) -> Self::Future {
+        Pin::new(Box::new(future::ok(self.response.clone())))
     }
 }
 
-impl From<PacketError> for PacketCodecError {
-    fn from(err: PacketError) -> Self {
-        Self::Packet(err)
+#[derive(Debug)]
+pub struct Request {
+    words: Vec<PacketWord>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Response {
+    words: Vec<PacketWord>,
+}
+
+impl Default for Response {
+    fn default() -> Self {
+        let ok = PacketWord::new("OK").unwrap();
+        Self { words: vec![ok] }
     }
 }
 
-impl Encoder for PacketCodec {
-    type Item = Packet;
-    type Error = PacketCodecError;
-
-    fn encode(&mut self, packet: Self::Item, buf: &mut BytesMut) -> Result<(), Self::Error> {
-        Ok(write_packet(buf, packet)?)
+impl Default for ConnectionBuilder {
+    fn default() -> Self {
+        let service = BoxService::new(DefaultService::default());
+        Self { service }
     }
 }
 
-impl Decoder for PacketCodec {
-    type Item = Packet;
-    type Error = PacketCodecError;
+#[derive(Debug)]
+pub struct ConnectionBuilder {
+    service: BoxService<Request, Response, Error>,
+}
 
-    fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        Ok(read_packet(buf)?)
+impl ConnectionBuilder {
+    //pub new() -> Self {
+    //     Default::default()
+    //}
+
+    /// Define the service for handling incoming requests.
+    pub fn service<S>(mut self, service: S) -> Self
+    where
+        S: Service<Request, Response = Response, Error = Error> + Send + 'static,
+        S::Future: Send + 'static,
+    {
+        self.service = BoxService::new(service);
+        self
+    }
+
+    pub async fn connect<A: ToSocketAddrs>(self, addr: A) -> Result<Connection<TcpStream>, Error> {
+        let transport = TcpStream::connect(addr).await?;
+        Ok(Connection {
+            transport,
+            origin: PacketOrigin::Client,
+        })
     }
 }
+
+pub struct Connection<T> {
+    origin: PacketOrigin,
+    transport: T,
+}
+
+impl<T> Connection<T> where T: AsyncRead + AsyncWrite {}

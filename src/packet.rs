@@ -1,4 +1,5 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use std::convert::TryFrom;
 use std::io::Cursor;
 use std::str;
 
@@ -236,7 +237,7 @@ impl PacketSequence {
 ////////////////////////////////////////////////////////////////////////////////
 
 /// The word structure of a packet.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct PacketWord {
     bytes: Bytes,
 }
@@ -281,6 +282,30 @@ impl PacketWord {
 impl AsRef<[u8]> for PacketWord {
     fn as_ref(&self) -> &[u8] {
         self.bytes.as_ref()
+    }
+}
+
+impl TryFrom<&str> for PacketWord {
+    type Error = PacketError;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        Self::new(s)
+    }
+}
+
+impl TryFrom<String> for PacketWord {
+    type Error = PacketError;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::from_bytes(Bytes::from(s))
+    }
+}
+
+impl TryFrom<&[u8]> for PacketWord {
+    type Error = PacketError;
+
+    fn try_from(s: &[u8]) -> Result<Self, Self::Error> {
+        Self::from_bytes(Bytes::from(s))
     }
 }
 

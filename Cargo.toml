@@ -7,4 +7,11 @@ edition = "2018"
 [dependencies]
 
 bytes = "0.4"
-tokio-codec = "0.1"
+futures-util-preview = "0.3.0-alpha.19"
+
+tokio-io = "0.2.0-alpha.6"
+tokio-net = { version = "0.2.0-alpha.6", features = ["tcp"] }
+tokio-codec = "0.2.0-alpha.6"
+
+tower-util = "0.3.0-alpha.1"
+tower-service = "0.3.0-alpha.2"
