@@ -2,10 +2,11 @@ use bytes::BytesMut;
 use std::io;
 use tokio_codec::{Decoder, Encoder};
 
-use crate::packet::*;
+use super::packet::*;
 
 pub struct PacketCodec;
 
+#[derive(Debug)]
 pub enum PacketCodecError {
     Io(io::Error),
     Packet(PacketError),

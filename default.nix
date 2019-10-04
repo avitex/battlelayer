@@ -14,6 +14,6 @@ stdenv.mkDerivation {
     name = "battlelayer-dev";
 
     buildInputs = [
-        latest.rustChannels.stable.rust
+        latest.rustChannels.beta.rust
     ];
 }
