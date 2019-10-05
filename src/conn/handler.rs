@@ -23,7 +23,7 @@ impl Handler {
         }
     }
 
-    pub fn handle(&mut self, request: Request) -> BoxFuture<'static, Result<Response, Error>> {
+    pub(crate) fn handle(&mut self, request: Request) -> BoxFuture<'static, Result<Response, Error>> {
         Box::pin(self.inner.call(request))
     }
 }
