@@ -1,14 +1,17 @@
+mod body;
 mod connection;
 mod error;
 mod handler;
-mod packet;
-pub mod respondable;
 mod socket;
 
+pub mod packet;
+pub mod respondable;
+
+pub use self::body::{Body, Word};
 pub use self::connection::{Connection, ConnectionBuilder};
 pub use self::error::Error;
 pub use self::handler::{DefaultHandler, Handler, RespondableHandler};
-pub use self::packet::*;
+pub use self::packet::{Packet, PacketKind, PacketSequence};
 pub use self::respondable::Respondable;
 pub use self::socket::{Socket, SocketError};
 
@@ -22,17 +25,17 @@ pub enum Role {
 
 #[derive(Debug)]
 pub struct Request {
-    pub body: Vec<PacketWord>,
+    pub body: Body,
 }
 
 #[derive(Debug, Clone)]
 pub struct Response {
-    pub body: Vec<PacketWord>,
+    pub body: Body,
 }
 
 impl Default for Response {
     fn default() -> Self {
-        let ok = PacketWord::new("OK").unwrap();
-        Self { body: vec![ok] }
+        let body = Body::new(vec!["OK"]).unwrap();
+        Self { body }
     }
 }

@@ -157,12 +157,12 @@ where
             //     return Err(Error::OriginMismatch);
             // }
             // Build the request for the handler.
-            let request = Request { body: packet_words };
+            let request = Request {
+                body: packet_words.into(),
+            };
             // Get the response built by handler.
             let response_fut = self.handler.handle(request);
-            let response_fut = async move {
-                Ok((packet_seq, response_fut.await?))
-            };
+            let response_fut = async move { Ok((packet_seq, response_fut.await?)) };
             let boxed_response_fut = Box::pin(response_fut);
             // Push to the queue.
             self.pending_responses.push(boxed_response_fut);
@@ -175,7 +175,9 @@ where
                 .pending_requests
                 .remove(&packet.seq.number())
                 .ok_or(Error::InvalidSequence)?;
-            let response = Response { body: packet.words };
+            let response = Response {
+                body: packet.words.into(),
+            };
             // Ignore errors here.
             let _ = responder.send(response);
             Ok(())
@@ -193,7 +195,7 @@ where
         // Build the packet
         let seq = PacketSequence::new(PacketKind::Request, self.role, seq_num)
             .map_err(|_| Error::InvalidSequence)?;
-        let packet = Packet::new(seq, request.body);
+        let packet = Packet::new(seq, request.body.to_vec());
         // Send it braz
         self.sock.send(packet).await?;
         // Add the responder to the queue
@@ -213,7 +215,7 @@ where
             request_seq.number(),
         )
         .map_err(|_| Error::InvalidSequence)?;
-        let response_packet = Packet::new(response_seq, response.body);
+        let response_packet = Packet::new(response_seq, response.body.to_vec());
         // Send it braz
         Ok(self.sock.send(response_packet).await?)
     }

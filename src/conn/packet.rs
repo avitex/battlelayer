@@ -1,10 +1,10 @@
-use std::convert::TryFrom;
+use std::fmt;
 use std::io::Cursor;
-use std::{fmt, str};
 
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
 
-use super::Role;
+use super::{Role, Word};
+use super::body::InvalidWordCharError;
 
 const PACKET_MAX_SIZE: usize = 16384;
 const PACKET_MAX_WORDS: usize = 256;
@@ -16,6 +16,11 @@ const PACKET_WORD_CONTENT_MAX_SIZE: usize =
 const PACKET_SEQ_CLIENT_MASK_U32: u32 = 0x8000_0000;
 const PACKET_SEQ_RESPON_MASK_U32: u32 = 0x4000_0000;
 const PACKET_SEQ_HEADER_MASK_U32: u32 = PACKET_SEQ_CLIENT_MASK_U32 | PACKET_SEQ_RESPON_MASK_U32;
+
+/// Checks if word char is in ASCII range and is not NULL.
+pub fn is_valid_word_char(byte: u8) -> bool {
+    byte != 0u8 && byte.is_ascii()
+}
 
 /// Reads a packet's wire representation from a BytesMut.
 pub fn read_packet(buf: &mut BytesMut) -> Result<Option<Packet>, PacketError> {
@@ -74,8 +79,13 @@ pub fn read_packet(buf: &mut BytesMut) -> Result<Option<Packet>, PacketError> {
         }
         // Freeze the word bytes.
         let word_bytes = word_buf.freeze();
-        // Push the packet word to the container.
-        words.push(PacketWord::from_bytes(word_bytes)?);
+        // Push the packet word to the container if succesful.
+        match Word::from_bytes(word_bytes) {
+            Ok(word) => words.push(word),
+            Err(InvalidWordCharError(invalid_char)) => {
+                return Err(PacketError::InvalidWordChar(invalid_char))
+            }
+        }
     }
     Ok(Some(Packet { seq, words }))
 }
@@ -135,12 +145,12 @@ fn read_u32_as_bounded_usize(
 #[derive(Debug)]
 pub struct Packet {
     pub seq: PacketSequence,
-    pub words: Vec<PacketWord>,
+    pub words: Vec<Word>,
 }
 
 impl Packet {
     /// Creates a new packet
-    pub fn new(seq: PacketSequence, words: Vec<PacketWord>) -> Self {
+    pub fn new(seq: PacketSequence, words: Vec<Word>) -> Self {
         Self { seq, words }
     }
 
@@ -246,79 +256,6 @@ impl fmt::Debug for PacketSequence {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-
-/// The word structure of a packet.
-#[derive(Debug, PartialEq, Clone)]
-pub struct PacketWord {
-    bytes: Bytes,
-}
-
-impl PacketWord {
-    /// Create a packet word from a UTF8 string.
-    pub fn new(word: &str) -> Result<Self, PacketError> {
-        Self::from_bytes(Bytes::from(word.as_bytes()))
-    }
-
-    /// Create a packet word from bytes.
-    pub fn from_bytes(bytes: Bytes) -> Result<Self, PacketError> {
-        if let Some(invalid_char) = bytes.as_ref().iter().find(|b| !Self::is_valid_char(**b)) {
-            Err(PacketError::InvalidWordChar(*invalid_char))
-        } else {
-            Ok(Self { bytes })
-        }
-    }
-
-    /// Checks if packet word char is in ASCII range and is not NULL.
-    pub fn is_valid_char(byte: u8) -> bool {
-        byte != 0u8 && byte.is_ascii()
-    }
-
-    /// Get the UTF8 representation of the packet word.
-    pub fn as_str(&self) -> &str {
-        // Safe as we validate each character on contruction.
-        unsafe { str::from_utf8_unchecked(self.as_ref()) }
-    }
-
-    /// Consume the packet word as bytes.
-    pub fn into_bytes(self) -> Bytes {
-        self.bytes
-    }
-
-    /// Total size of the word content.
-    pub fn byte_size(&self) -> usize {
-        self.bytes.len()
-    }
-}
-
-impl AsRef<[u8]> for PacketWord {
-    fn as_ref(&self) -> &[u8] {
-        self.bytes.as_ref()
-    }
-}
-
-impl TryFrom<&str> for PacketWord {
-    type Error = PacketError;
-
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        Self::new(s)
-    }
-}
-
-impl TryFrom<String> for PacketWord {
-    type Error = PacketError;
-
-    fn try_from(s: String) -> Result<Self, Self::Error> {
-        Self::from_bytes(Bytes::from(s))
-    }
-}
-
-impl TryFrom<&[u8]> for PacketWord {
-    type Error = PacketError;
-
-    fn try_from(s: &[u8]) -> Result<Self, Self::Error> {
-        Self::from_bytes(Bytes::from(s))
-    }
-}
 
 ////////////////////////////////////////////////////////////////////////////////
 
