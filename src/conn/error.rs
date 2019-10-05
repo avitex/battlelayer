@@ -1,12 +1,14 @@
 use std::io;
 
 use super::SocketError;
+use futures_channel::mpsc;
 use tokio_executor::SpawnError;
 
 #[derive(Debug)]
 pub enum Error {
     Spawn(SpawnError),
     Socket(SocketError),
+    Responder(mpsc::SendError),
     InvalidSequence,
     OriginMismatch,
     RequestFailed,

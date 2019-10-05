@@ -1,14 +1,14 @@
 mod connection;
 mod error;
 mod handler;
-mod outbound;
 mod packet;
 mod socket;
+pub mod respondable;
 
 pub use self::connection::{Connection, ConnectionBuilder};
 pub use self::error::Error;
-pub use self::handler::Handler;
-pub use self::outbound::ResponseFuture;
+pub use self::handler::{Handler, DefaultHandler, RespondableHandler};
+pub use self::respondable::Respondable;
 pub use self::packet::*;
 pub use self::socket::{Socket, SocketError};
 

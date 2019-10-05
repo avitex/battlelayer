@@ -5,8 +5,7 @@ use futures_util::future;
 use tower_service::Service;
 use tower_util::BoxService;
 
-use super::error::Error;
-use super::{Request, Response};
+use super::{respondable, Error, Request, Response};
 
 #[derive(Debug)]
 pub struct Handler {
@@ -52,5 +51,31 @@ impl Service<Request> for DefaultHandler {
 
     fn call(&mut self, _request: Request) -> Self::Future {
         Box::pin(future::ok(self.response.clone()))
+    }
+}
+
+pub struct RespondableHandler {
+    sender: respondable::Sender,
+}
+
+impl RespondableHandler {
+    pub fn new() -> (Self, respondable::Receiver) {
+        let (sender, receiver) = respondable::channel();
+        (Self { sender }, receiver)
+    }
+}
+
+impl Service<Request> for RespondableHandler {
+    type Error = Error;
+    type Response = Response;
+
+    type Future = respondable::ResponseFuture;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.sender.poll_ready(cx)
+    }
+
+    fn call(&mut self, request: Request) -> Self::Future {
+        self.sender.send(request)
     }
 }

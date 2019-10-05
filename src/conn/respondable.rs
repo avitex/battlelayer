@@ -7,38 +7,56 @@ use futures_util::ready;
 
 use super::{Error, Request, Response};
 
+pub type Receiver = mpsc::UnboundedReceiver<Respondable>;
+pub type Responder = oneshot::Sender<Response>;
+
+pub fn channel() -> (Sender, Receiver) {
+    let (tx, rx) = mpsc::unbounded();
+    (Sender { tx }, rx)
+}
+
 #[derive(Debug)]
-pub struct OutboundRequest {
-    pub request: Request,
-    pub responder: RequestResponder,
+pub struct Respondable {
+    request: Request,
+    responder: Responder,
 }
 
-pub type RequestReceiver = mpsc::UnboundedReceiver<OutboundRequest>;
-pub type RequestResponder = oneshot::Sender<Response>;
-
-pub struct RequestSender {
-    tx: mpsc::UnboundedSender<OutboundRequest>,
-}
-
-impl RequestSender {
-    pub fn new() -> (Self, RequestReceiver) {
-        let (tx, rx) = mpsc::unbounded();
-        (Self { tx }, rx)
+impl Respondable {
+    pub fn request(&self) -> &Request {
+        &self.request
     }
 
+    pub fn respond(self, response: Response) -> Result<(), Response> {
+        self.responder.send(response)
+    }
+
+    pub fn split(self) -> (Request, Responder) {
+        (self.request, self.responder)
+    }
+}
+
+pub struct Sender {
+    tx: mpsc::UnboundedSender<Respondable>,
+}
+
+impl Sender {
     pub fn send(&mut self, request: Request) -> ResponseFuture {
         let (response_tx, response_rx) = oneshot::channel();
-        let outbound_request = OutboundRequest {
+        let responable = Respondable {
             request: request,
             responder: response_tx,
         };
-        if self.tx.unbounded_send(outbound_request).is_ok() {
+        if self.tx.unbounded_send(responable).is_ok() {
             ResponseFuture {
                 rx: Some(response_rx),
             }
         } else {
             ResponseFuture { rx: None }
         }
+    }
+
+    pub fn poll_ready(&mut self, cx: &mut Context) -> Poll<Result<(), Error>> {
+        self.tx.poll_ready(cx).map_err(|err| Error::Responder(err))
     }
 }
 

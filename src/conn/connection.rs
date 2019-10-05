@@ -11,17 +11,17 @@ use tokio_net::{tcp::TcpStream, ToSocketAddrs};
 use tower_service::Service;
 
 use super::{
-    outbound, Error, Handler, Packet, PacketKind, PacketSequence, Request, Response,
-    ResponseFuture, Role, Socket, SocketError,
+    respondable, Error, Handler, Packet, PacketKind, PacketSequence, Request, Response,
+    Respondable, Role, Socket, SocketError,
 };
 
 pub struct Connection {
-    sender: outbound::RequestSender,
+    sender: respondable::Sender,
     process_handle: RemoteHandle<Result<(), Error>>,
 }
 
 impl Connection {
-    pub fn send_request(&mut self, request: Request) -> ResponseFuture {
+    pub fn send_request(&mut self, request: Request) -> respondable::ResponseFuture {
         self.sender.send(request)
     }
 
@@ -33,7 +33,7 @@ impl Connection {
 impl Service<Request> for Connection {
     type Response = Response;
     type Error = Error;
-    type Future = ResponseFuture;
+    type Future = respondable::ResponseFuture;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
@@ -104,9 +104,9 @@ where
     role: Role,
     sock: Socket<T>,
     handler: Handler,
-    request_tx: Option<outbound::RequestSender>,
-    request_rx: outbound::RequestReceiver,
-    pending_requests: HashMap<u32, outbound::RequestResponder>,
+    request_tx: Option<respondable::Sender>,
+    request_rx: respondable::Receiver,
+    pending_requests: HashMap<u32, respondable::Responder>,
 }
 
 impl<T> ConnectionProcess<T>
@@ -114,7 +114,7 @@ where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     pub fn new(transport: T, handler: Handler, role: Role) -> Self {
-        let (request_tx, request_rx) = outbound::RequestSender::new();
+        let (request_tx, request_rx) = respondable::channel();
         Self {
             role,
             handler,
@@ -175,9 +175,9 @@ where
 
     async fn handle_outgoing_request(
         &mut self,
-        outbound_request: outbound::OutboundRequest,
+        outbound_request: Respondable,
     ) -> Result<(), Error> {
-        let outbound::OutboundRequest { request, responder } = outbound_request;
+        let (request, reponder) = outbound_request.split();
         // Get next sequence number
         let seq_num = self.next_seq;
         self.next_seq += 1;
@@ -188,7 +188,7 @@ where
         // Send it braz
         self.sock.send(packet).await?;
         // Add the responder to the queue
-        self.pending_requests.insert(seq_num, responder);
+        self.pending_requests.insert(seq_num, reponder);
         Ok(())
     }
 
