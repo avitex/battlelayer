@@ -1,7 +1,8 @@
-use bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::convert::TryFrom;
 use std::io::Cursor;
 use std::str;
+
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 const PACKET_MAX_SIZE: usize = 16384;
 const PACKET_MAX_WORDS: usize = 256;
