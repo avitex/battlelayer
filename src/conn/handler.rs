@@ -1,7 +1,7 @@
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use futures_util::future;
+use futures_util::future::{self, BoxFuture};
 use tower_service::Service;
 use tower_util::BoxService;
 
@@ -23,14 +23,24 @@ impl Handler {
         }
     }
 
-    pub async fn handle(&mut self, request: Request) -> Result<Response, Error> {
-        self.inner.call(request).await
+    pub fn handle(&mut self, request: Request) -> BoxFuture<'static, Result<Response, Error>> {
+        Box::pin(self.inner.call(request))
     }
 }
 
 impl Default for Handler {
     fn default() -> Self {
         Self::new(DefaultHandler::default())
+    }
+}
+
+impl<S> From<S> for Handler
+where
+    S: Service<Request, Response = Response, Error = Error> + Send + 'static,
+    S::Future: Send + 'static,
+{
+    fn from(service: S) -> Self {
+        Handler::new(service)
     }
 }
 

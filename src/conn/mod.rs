@@ -2,14 +2,14 @@ mod connection;
 mod error;
 mod handler;
 mod packet;
-mod socket;
 pub mod respondable;
+mod socket;
 
 pub use self::connection::{Connection, ConnectionBuilder};
 pub use self::error::Error;
-pub use self::handler::{Handler, DefaultHandler, RespondableHandler};
-pub use self::respondable::Respondable;
+pub use self::handler::{DefaultHandler, Handler, RespondableHandler};
 pub use self::packet::*;
+pub use self::respondable::Respondable;
 pub use self::socket::{Socket, SocketError};
 
 #[derive(Debug, Clone, Copy, PartialEq)]

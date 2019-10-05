@@ -1,18 +1,18 @@
 use std::collections::HashMap;
 use std::task::{Context, Poll};
 
+use futures_util::future::{BoxFuture, FutureExt, RemoteHandle};
 use futures_util::select;
-use futures_util::future::{FutureExt, RemoteHandle};
 use futures_util::sink::SinkExt;
-use futures_util::stream::StreamExt;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio_executor::{DefaultExecutor, Executor};
 use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_net::{tcp::TcpStream, ToSocketAddrs};
 use tower_service::Service;
 
 use super::{
-    respondable, Error, Handler, Packet, PacketKind, PacketSequence, Request, Response,
-    Respondable, Role, Socket, SocketError,
+    respondable, Error, Handler, Packet, PacketKind, PacketSequence, Request, Respondable,
+    Response, Role, Socket, SocketError,
 };
 
 pub struct Connection {
@@ -96,6 +96,8 @@ impl Default for ConnectionBuilder {
 
 ///////////////////////////////////////////////////////////////////////////////
 
+type PendingResponseResult = Result<(PacketSequence, Response), Error>;
+
 struct ConnectionProcess<T>
 where
     T: AsyncRead + AsyncWrite,
@@ -107,6 +109,7 @@ where
     request_tx: Option<respondable::Sender>,
     request_rx: respondable::Receiver,
     pending_requests: HashMap<u32, respondable::Responder>,
+    pending_responses: FuturesUnordered<BoxFuture<'static, PendingResponseResult>>,
 }
 
 impl<T> ConnectionProcess<T>
@@ -123,6 +126,7 @@ where
             request_tx: Some(request_tx),
             sock: Socket::new(transport),
             pending_requests: HashMap::new(),
+            pending_responses: FuturesUnordered::new(),
         }
     }
 
@@ -136,27 +140,32 @@ where
             .expect("connection process started more than once");
         let (process_fut, process_handle) = async move { self.run().await }.remote_handle();
         match exec.spawn(Box::pin(process_fut)) {
-            Ok(()) => Ok(Connection { process_handle, sender: request_tx }),
+            Ok(()) => Ok(Connection {
+                process_handle,
+                sender: request_tx,
+            }),
             Err(err) => Err(Error::Spawn(err)),
         }
     }
 
     async fn handle_incoming_packet(&mut self, packet: Packet) -> Result<(), Error> {
         if packet.seq.kind() == PacketKind::Request {
+            let packet_seq = packet.seq;
+            let packet_words = packet.words;
             // TODO: Are BF4 servers compliant with their own standard?
             // if packet.seq.origin() == self.role {
             //     return Err(Error::OriginMismatch);
             // }
             // Build the request for the handler.
-            let request = Request { body: packet.words };
+            let request = Request { body: packet_words };
             // Get the response built by handler.
-            let response = self.handler.handle(request).await?;
-            // Build the response packet.
-            let response_seq = PacketSequence::new(PacketKind::Response, packet.seq.origin(), packet.seq.number())
-                .map_err(|_| Error::InvalidSequence)?;
-            let response_packet = Packet::new(response_seq, response.body);
-            // Send it braz
-            self.sock.send(response_packet).await?;
+            let response_fut = self.handler.handle(request);
+            let response_fut = async move {
+                Ok((packet_seq, response_fut.await?))
+            };
+            let boxed_response_fut = Box::pin(response_fut);
+            // Push to the queue.
+            self.pending_responses.push(boxed_response_fut);
             Ok(())
         } else {
             if packet.seq.origin() != self.role {
@@ -192,6 +201,23 @@ where
         Ok(())
     }
 
+    async fn handle_outgoing_response(
+        &mut self,
+        outbound_response: (PacketSequence, Response),
+    ) -> Result<(), Error> {
+        let (request_seq, response) = outbound_response;
+        // Build the response packet.
+        let response_seq = PacketSequence::new(
+            PacketKind::Response,
+            request_seq.origin(),
+            request_seq.number(),
+        )
+        .map_err(|_| Error::InvalidSequence)?;
+        let response_packet = Packet::new(response_seq, response.body);
+        // Send it braz
+        Ok(self.sock.send(response_packet).await?)
+    }
+
     async fn run(&mut self) -> Result<(), Error> {
         loop {
             select! {
@@ -200,9 +226,13 @@ where
                     self.handle_incoming_packet(packet).await?;
                 },
                 outbound_request_opt = self.request_rx.next() => {
-                    // TODO: better error..
                     let outbound_request = outbound_request_opt.ok_or(SocketError::Closed)?;
                     self.handle_outgoing_request(outbound_request).await?;
+                },
+                outbound_response_opt = self.pending_responses.next() => {
+                    if let Some(outbound_response_res) = outbound_response_opt {
+                        self.handle_outgoing_response(outbound_response_res?).await?
+                    }
                 },
             }
         }
