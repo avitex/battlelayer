@@ -9,11 +9,12 @@ use super::{Error, Request, Response};
 
 #[derive(Debug)]
 pub struct OutboundRequest {
-    req: Request,
-    res: oneshot::Sender<Response>,
+    pub request: Request,
+    pub responder: RequestResponder,
 }
 
 pub type RequestReceiver = mpsc::UnboundedReceiver<OutboundRequest>;
+pub type RequestResponder = oneshot::Sender<Response>;
 
 pub struct RequestSender {
     tx: mpsc::UnboundedSender<OutboundRequest>,
@@ -28,8 +29,8 @@ impl RequestSender {
     pub fn send(&mut self, request: Request) -> ResponseFuture {
         let (response_tx, response_rx) = oneshot::channel();
         let outbound_request = OutboundRequest {
-            req: request,
-            res: response_tx,
+            request: request,
+            responder: response_tx,
         };
         if self.tx.unbounded_send(outbound_request).is_ok() {
             ResponseFuture {

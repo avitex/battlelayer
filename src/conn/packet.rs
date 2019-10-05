@@ -1,14 +1,18 @@
 use std::convert::TryFrom;
 use std::io::Cursor;
-use std::str;
+use std::{fmt, str};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+
+use super::Role;
 
 const PACKET_MAX_SIZE: usize = 16384;
 const PACKET_MAX_WORDS: usize = 256;
 const PACKET_HEADER_SIZE: usize = 12;
-const PACKET_WORD_MIN_SIZE: usize = 5;
-const PACKET_WORD_MAX_SIZE: usize = PACKET_MAX_SIZE - (PACKET_HEADER_SIZE + PACKET_WORD_MIN_SIZE);
+const PACKET_WORD_HEADER_FOOTER_SIZE: usize = 5;
+const PACKET_WORD_CONTENT_MIN_SIZE: usize = 0;
+const PACKET_WORD_CONTENT_MAX_SIZE: usize =
+    PACKET_MAX_SIZE - (PACKET_HEADER_SIZE + PACKET_WORD_HEADER_FOOTER_SIZE);
 const PACKET_SEQ_CLIENT_MASK_U32: u32 = 0x8000_0000;
 const PACKET_SEQ_RESPON_MASK_U32: u32 = 0x4000_0000;
 const PACKET_SEQ_HEADER_MASK_U32: u32 = PACKET_SEQ_CLIENT_MASK_U32 | PACKET_SEQ_RESPON_MASK_U32;
@@ -54,8 +58,8 @@ pub fn read_packet(buf: &mut BytesMut) -> Result<Option<Packet>, PacketError> {
         // Extract the word size from the word size buf.
         let word_size = read_u32_as_bounded_usize(
             &mut Cursor::new(word_size_buf.as_ref()),
-            PACKET_WORD_MIN_SIZE,
-            PACKET_WORD_MAX_SIZE,
+            PACKET_WORD_CONTENT_MIN_SIZE,
+            PACKET_WORD_CONTENT_MAX_SIZE,
         )?;
         // Again validate we can read the claimed size
         // of the word, including the NULL terminator.
@@ -65,7 +69,7 @@ pub fn read_packet(buf: &mut BytesMut) -> Result<Option<Packet>, PacketError> {
         // Split off the word content from the body buf.
         let word_buf = body_buf.split_to(word_size);
         // Split off and validate we have a trailing null character.
-        if body_buf.split_to(1).as_ref() != &[0] {
+        if body_buf.split_to(1).as_ref() != [0] {
             return Err(PacketError::Malformed);
         }
         // Freeze the word bytes.
@@ -135,6 +139,11 @@ pub struct Packet {
 }
 
 impl Packet {
+    /// Creates a new packet
+    pub fn new(seq: PacketSequence, words: Vec<PacketWord>) -> Self {
+        Self { seq, words }
+    }
+
     /// Calculates the total size of the packet.
     pub fn byte_size(&self) -> usize {
         // Calculate the wire representation size of
@@ -142,7 +151,7 @@ impl Packet {
         let words_byte_size: usize = self
             .words
             .iter()
-            .map(|w| w.byte_size() + PACKET_WORD_MIN_SIZE)
+            .map(|w| w.byte_size() + PACKET_WORD_HEADER_FOOTER_SIZE)
             .sum();
         // Return the sum of the words and packet header.
         words_byte_size + PACKET_HEADER_SIZE
@@ -168,32 +177,23 @@ pub enum PacketKind {
     Response,
 }
 
-#[derive(Debug, PartialEq)]
-pub enum PacketOrigin {
-    /// Indicates the packet originated from the server.
-    Server,
-    /// Indicates the packet originated from the client.
-    Client,
-}
-
 ////////////////////////////////////////////////////////////////////////////////
 
 /// The sequence structure of a packet.
-#[derive(Debug)]
 pub struct PacketSequence {
     raw: u32,
 }
 
 impl PacketSequence {
     /// Creates a new packet sequence.
-    pub fn new(kind: PacketKind, origin: PacketOrigin, mut seq: u32) -> Result<Self, PacketError> {
+    pub fn new(kind: PacketKind, origin: Role, mut seq: u32) -> Result<Self, PacketError> {
         if (seq & PACKET_SEQ_HEADER_MASK_U32) != 0 {
             Err(PacketError::InvalidSequenceNumber)
         } else {
             if kind == PacketKind::Response {
                 seq |= PACKET_SEQ_RESPON_MASK_U32;
             }
-            if origin == PacketOrigin::Client {
+            if origin == Role::Client {
                 seq |= PACKET_SEQ_CLIENT_MASK_U32;
             }
             Ok(Self::from_raw(seq))
@@ -211,15 +211,6 @@ impl PacketSequence {
         self.raw
     }
 
-    /// Returns the origin of the packet (client/server).
-    pub fn origin(&self) -> PacketOrigin {
-        if (self.raw & PACKET_SEQ_CLIENT_MASK_U32) != 0 {
-            PacketOrigin::Client
-        } else {
-            PacketOrigin::Server
-        }
-    }
-
     /// Returns the kind of packet (request/response).
     pub fn kind(&self) -> PacketKind {
         if (self.raw & PACKET_SEQ_RESPON_MASK_U32) != 0 {
@@ -229,9 +220,28 @@ impl PacketSequence {
         }
     }
 
+    /// Returns the origin of the packet (client/server).
+    pub fn origin(&self) -> Role {
+        if (self.raw & PACKET_SEQ_CLIENT_MASK_U32) != 0 {
+            Role::Client
+        } else {
+            Role::Server
+        }
+    }
+
     /// Returns the packet sequence number.
     pub fn number(&self) -> u32 {
         self.raw & !PACKET_SEQ_HEADER_MASK_U32
+    }
+}
+
+impl fmt::Debug for PacketSequence {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt.debug_struct("PacketSequence")
+            .field("kind", &self.kind())
+            .field("origin", &self.origin())
+            .field("number", &self.number())
+            .finish()
     }
 }
 
@@ -324,22 +334,25 @@ mod tests {
             0b0000_0000, 0b0000_0000,
             0b0000_0000, 0b1000_0000,
             // size,
-            32, 0, 0, 0,
+            39, 0, 0, 0,
             // word num
-            2, 0, 0, 0,
+            3, 0, 0, 0,
             // word "hello"
             5, 0, 0, 0, b'h', b'e', b'l', b'l', b'o', 0,
             // word "world"
             5, 0, 0, 0, b'w', b'o', b'r', b'l', b'd', 0,
+            // word "ok"
+            2, 0, 0, 0, b'o', b'k', 0,
         ];
         let packet = read_packet(&mut BytesMut::from(&packet_bytes[..])).unwrap().unwrap();
         assert_eq!(packet.seq.kind(), PacketKind::Request);
-        assert_eq!(packet.seq.origin(), PacketOrigin::Client);
+        assert_eq!(packet.seq.origin(), Role::Client);
         assert_eq!(
             &packet.words[..],
             &[
                 PacketWord::new("hello").unwrap(),
                 PacketWord::new("world").unwrap(),
+                PacketWord::new("ok").unwrap(),
             ]
         );
         let mut out = BytesMut::with_capacity(packet_bytes.len());
@@ -349,21 +362,21 @@ mod tests {
 
     #[test]
     fn packet_sequence_number_test() {
-        let seq = PacketSequence::new(PacketKind::Request, PacketOrigin::Client, 1234u32).unwrap();
+        let seq = PacketSequence::new(PacketKind::Request, Role::Client, 1234u32).unwrap();
         assert_eq!(seq.number(), 1234u32);
     }
 
     #[test]
     #[should_panic]
     fn packet_sequence_number_invalid_test() {
-        PacketSequence::new(PacketKind::Request, PacketOrigin::Client, 0xffffffff).unwrap();
+        PacketSequence::new(PacketKind::Request, Role::Client, 0xffffffff).unwrap();
     }
 
     #[test]
     fn client_packet_sequence_test() {
         let seq_bytes = u32::from_le_bytes([0b0000_00000, 0b0000_0000, 0b0000_0000, 0b1000_0000]);
         let seq = PacketSequence::from_raw(seq_bytes);
-        assert_eq!(seq.origin(), PacketOrigin::Client);
+        assert_eq!(seq.origin(), Role::Client);
         assert_eq!(seq.number(), 0u32);
         assert_eq!(seq.kind(), PacketKind::Request);
     }
@@ -372,7 +385,7 @@ mod tests {
     fn server_packet_sequence_test() {
         let seq_bytes = u32::from_le_bytes([0b0000_00000, 0b0000_0000, 0b0000_0000, 0b0100_0000]);
         let seq = PacketSequence::from_raw(seq_bytes);
-        assert_eq!(seq.origin(), PacketOrigin::Server);
+        assert_eq!(seq.origin(), Role::Server);
         assert_eq!(seq.kind(), PacketKind::Response);
         assert_eq!(seq.number(), 0u32);
     }

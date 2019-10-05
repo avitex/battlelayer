@@ -12,6 +12,14 @@ pub use self::outbound::ResponseFuture;
 pub use self::packet::*;
 pub use self::socket::{Socket, SocketError};
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Role {
+    /// Indicates a server role.
+    Server,
+    /// Indicates a client role.
+    Client,
+}
+
 #[derive(Debug)]
 pub struct Request {
     pub body: Vec<PacketWord>,

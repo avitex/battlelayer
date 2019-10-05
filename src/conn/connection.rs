@@ -2,25 +2,31 @@ use std::collections::HashMap;
 use std::task::{Context, Poll};
 
 use futures_util::select;
+use futures_util::future::{FutureExt, RemoteHandle};
+use futures_util::sink::SinkExt;
 use futures_util::stream::StreamExt;
 use tokio_executor::{DefaultExecutor, Executor};
 use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_net::{tcp::TcpStream, ToSocketAddrs};
 use tower_service::Service;
 
-use super::{outbound, Error, Handler, PacketOrigin, Request, Response, ResponseFuture, Socket};
+use super::{
+    outbound, Error, Handler, Packet, PacketKind, PacketSequence, Request, Response,
+    ResponseFuture, Role, Socket, SocketError,
+};
 
 pub struct Connection {
     sender: outbound::RequestSender,
+    process_handle: RemoteHandle<Result<(), Error>>,
 }
 
 impl Connection {
-    fn from_sender(sender: outbound::RequestSender) -> Self {
-        Self { sender }
-    }
-
     pub fn send_request(&mut self, request: Request) -> ResponseFuture {
         self.sender.send(request)
+    }
+
+    pub fn finish(self) -> RemoteHandle<Result<(), Error>> {
+        self.process_handle
     }
 }
 
@@ -42,7 +48,6 @@ impl Service<Request> for Connection {
 
 #[derive(Debug)]
 pub struct ConnectionBuilder {
-    origin: PacketOrigin,
     handler: Handler,
 }
 
@@ -51,33 +56,33 @@ impl ConnectionBuilder {
         Self::default()
     }
 
-    pub fn origin(mut self, origin: PacketOrigin) -> Self {
-        self.origin = origin;
+    pub fn handler<T: Into<Handler>>(mut self, handler: T) -> Self {
+        self.handler = handler.into();
         self
     }
 
-    pub fn handler(mut self, handler: Handler) -> Self {
-        self.handler = handler;
-        self
-    }
-
-    pub fn with_transport_and_exec<T, E>(self, transport: T, exec: E) -> Result<Connection, Error>
+    pub fn with_transport_and_exec<T, E>(
+        self,
+        transport: T,
+        role: Role,
+        exec: E,
+    ) -> Result<Connection, Error>
     where
         E: Executor,
         T: Send + AsyncRead + AsyncWrite + Unpin + 'static,
     {
-        ConnectionProcess::new(transport).start(exec)
+        ConnectionProcess::new(transport, self.handler, role).start(exec)
     }
 
-    pub fn with_transport<T>(self, transport: T) -> Result<Connection, Error>
+    pub fn with_transport<T>(self, transport: T, role: Role) -> Result<Connection, Error>
     where
         T: Send + AsyncRead + AsyncWrite + Unpin + 'static,
     {
-        self.with_transport_and_exec(transport, DefaultExecutor::current())
+        self.with_transport_and_exec(transport, role, DefaultExecutor::current())
     }
 
     pub async fn connect<A: ToSocketAddrs>(self, addr: A) -> Result<Connection, Error> {
-        self.with_transport(TcpStream::connect(addr).await?)
+        self.with_transport(TcpStream::connect(addr).await?, Role::Client)
     }
 }
 
@@ -85,7 +90,6 @@ impl Default for ConnectionBuilder {
     fn default() -> Self {
         Self {
             handler: Default::default(),
-            origin: PacketOrigin::Client,
         }
     }
 }
@@ -96,23 +100,29 @@ struct ConnectionProcess<T>
 where
     T: AsyncRead + AsyncWrite,
 {
+    next_seq: u32,
+    role: Role,
     sock: Socket<T>,
+    handler: Handler,
     request_tx: Option<outbound::RequestSender>,
     request_rx: outbound::RequestReceiver,
-    request_registry: HashMap<u32, ()>,
+    pending_requests: HashMap<u32, outbound::RequestResponder>,
 }
 
 impl<T> ConnectionProcess<T>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    pub fn new(transport: T) -> Self {
+    pub fn new(transport: T, handler: Handler, role: Role) -> Self {
         let (request_tx, request_rx) = outbound::RequestSender::new();
         Self {
+            role,
+            handler,
             request_rx,
+            next_seq: 0,
             request_tx: Some(request_tx),
             sock: Socket::new(transport),
-            request_registry: HashMap::new(),
+            pending_requests: HashMap::new(),
         }
     }
 
@@ -124,22 +134,75 @@ where
             .request_tx
             .take()
             .expect("connection process started more than once");
-        let fut = async move { self.run().await };
-        match exec.spawn(Box::pin(fut)) {
-            Ok(_) => Ok(Connection::from_sender(request_tx)),
+        let (process_fut, process_handle) = async move { self.run().await }.remote_handle();
+        match exec.spawn(Box::pin(process_fut)) {
+            Ok(()) => Ok(Connection { process_handle, sender: request_tx }),
             Err(err) => Err(Error::Spawn(err)),
         }
     }
 
-    async fn run(&mut self) {
+    async fn handle_incoming_packet(&mut self, packet: Packet) -> Result<(), Error> {
+        if packet.seq.kind() == PacketKind::Request {
+            // TODO: Are BF4 servers compliant with their own standard?
+            // if packet.seq.origin() == self.role {
+            //     return Err(Error::OriginMismatch);
+            // }
+            // Build the request for the handler.
+            let request = Request { body: packet.words };
+            // Get the response built by handler.
+            let response = self.handler.handle(request).await?;
+            // Build the response packet.
+            let response_seq = PacketSequence::new(PacketKind::Response, packet.seq.origin(), packet.seq.number())
+                .map_err(|_| Error::InvalidSequence)?;
+            let response_packet = Packet::new(response_seq, response.body);
+            // Send it braz
+            self.sock.send(response_packet).await?;
+            Ok(())
+        } else {
+            if packet.seq.origin() != self.role {
+                return Err(Error::OriginMismatch);
+            }
+            let responder = self
+                .pending_requests
+                .remove(&packet.seq.number())
+                .ok_or(Error::InvalidSequence)?;
+            let response = Response { body: packet.words };
+            // Ignore errors here.
+            let _ = responder.send(response);
+            Ok(())
+        }
+    }
+
+    async fn handle_outgoing_request(
+        &mut self,
+        outbound_request: outbound::OutboundRequest,
+    ) -> Result<(), Error> {
+        let outbound::OutboundRequest { request, responder } = outbound_request;
+        // Get next sequence number
+        let seq_num = self.next_seq;
+        self.next_seq += 1;
+        // Build the packet
+        let seq = PacketSequence::new(PacketKind::Request, self.role, seq_num)
+            .map_err(|_| Error::InvalidSequence)?;
+        let packet = Packet::new(seq, request.body);
+        // Send it braz
+        self.sock.send(packet).await?;
+        // Add the responder to the queue
+        self.pending_requests.insert(seq_num, responder);
+        Ok(())
+    }
+
+    async fn run(&mut self) -> Result<(), Error> {
         loop {
-            // TODO
             select! {
-                packet = self.sock.next() => {
-                    dbg!(packet);
+                sock_res = self.sock.next() => {
+                    let packet = sock_res.unwrap_or(Err(SocketError::Closed))?;
+                    self.handle_incoming_packet(packet).await?;
                 },
-                request = self.request_rx.next() => {
-                    dbg!(request);
+                outbound_request_opt = self.request_rx.next() => {
+                    // TODO: better error..
+                    let outbound_request = outbound_request_opt.ok_or(SocketError::Closed)?;
+                    self.handle_outgoing_request(outbound_request).await?;
                 },
             }
         }

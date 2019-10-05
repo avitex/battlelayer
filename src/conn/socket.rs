@@ -104,6 +104,7 @@ where
 #[derive(Debug)]
 pub enum SocketError {
     Broken,
+    Closed,
     Io(io::Error),
     Packet(PacketError),
 }

@@ -23,6 +23,10 @@ impl Handler {
             inner: BoxService::new(inner),
         }
     }
+
+    pub async fn handle(&mut self, request: Request) -> Result<Response, Error> {
+        self.inner.call(request).await
+    }
 }
 
 impl Default for Handler {

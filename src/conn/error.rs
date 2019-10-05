@@ -7,12 +7,20 @@ use tokio_executor::SpawnError;
 pub enum Error {
     Spawn(SpawnError),
     Socket(SocketError),
+    InvalidSequence,
+    OriginMismatch,
     RequestFailed,
     RequestCancelled,
 }
 
+impl From<SocketError> for Error {
+    fn from(err: SocketError) -> Self {
+        Self::Socket(err)
+    }
+}
+
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Self {
-        Self::Socket(SocketError::Io(err))
+        SocketError::Io(err).into()
     }
 }
