@@ -22,18 +22,20 @@ pub struct Connection {
 }
 
 impl Connection {
-    pub async fn exec<C>(&mut self, command: C) -> Result<Vec<Word>, Error>
+    /// Send a request.
+    pub async fn send<B>(&mut self, words: B) -> Result<Vec<Word>, Error>
     where
-        C: TryInto<Body, Error = BodyError>,
+        B: TryInto<Body, Error = BodyError>,
     {
-        let body = command.try_into()?;
+        let body = words.try_into()?;
         let request = Request { body };
         let response = self.send_request(request).await?;
         Ok(response.body.to_vec())
     }
 
-    pub fn finish(self) -> RemoteHandle<Result<(), Error>> {
-        self.process_handle
+    /// Will resolve once the connection is closed.
+    pub async fn finish(self) -> Result<(), Error> {
+        self.process_handle.await
     }
 
     fn send_request(&mut self, request: Request) -> respondable::ResponseFuture {
