@@ -3,8 +3,7 @@ use std::io::Cursor;
 
 use bytes::{Buf, BufMut, BytesMut};
 
-use super::{Role, Word};
-use super::body::InvalidWordCharError;
+use super::{BodyError, Role, Word};
 
 const PACKET_MAX_SIZE: usize = 16384;
 const PACKET_MAX_WORDS: usize = 256;
@@ -82,7 +81,7 @@ pub fn read_packet(buf: &mut BytesMut) -> Result<Option<Packet>, PacketError> {
         // Push the packet word to the container if succesful.
         match Word::from_bytes(word_bytes) {
             Ok(word) => words.push(word),
-            Err(InvalidWordCharError(invalid_char)) => {
+            Err(BodyError::InvalidWordChar(invalid_char)) => {
                 return Err(PacketError::InvalidWordChar(invalid_char))
             }
         }

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::task::{Context, Poll};
 
 use futures_util::future::{BoxFuture, FutureExt, RemoteHandle};
@@ -11,8 +12,8 @@ use tokio_net::{tcp::TcpStream, ToSocketAddrs};
 use tower_service::Service;
 
 use super::{
-    respondable, Error, Handler, Packet, PacketKind, PacketSequence, Request, Respondable,
-    Response, Role, Socket, SocketError,
+    respondable, Body, BodyError, Error, Handler, Packet, PacketKind, PacketSequence, Request,
+    Respondable, Response, Role, Socket, SocketError, Word,
 };
 
 pub struct Connection {
@@ -21,12 +22,22 @@ pub struct Connection {
 }
 
 impl Connection {
-    pub fn send_request(&mut self, request: Request) -> respondable::ResponseFuture {
-        self.sender.send(request)
+    pub async fn exec<C>(&mut self, command: C) -> Result<Vec<Word>, Error>
+    where
+        C: TryInto<Body, Error = BodyError>,
+    {
+        let body = command.try_into()?;
+        let request = Request { body };
+        let response = self.send_request(request).await?;
+        Ok(response.body.to_vec())
     }
 
     pub fn finish(self) -> RemoteHandle<Result<(), Error>> {
         self.process_handle
+    }
+
+    fn send_request(&mut self, request: Request) -> respondable::ResponseFuture {
+        self.sender.send(request)
     }
 }
 

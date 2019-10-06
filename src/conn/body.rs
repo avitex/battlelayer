@@ -4,16 +4,21 @@ use std::str;
 use super::packet;
 use bytes::Bytes;
 
+#[derive(Debug, PartialEq)]
+pub enum BodyError {
+    InvalidWordChar(u8),
+}
+
 #[derive(Debug, Clone)]
 pub struct Body {
     words: Vec<Word>,
 }
 
 impl Body {
-    pub fn new<I, W>(words: I) -> Result<Self, InvalidWordCharError>
+    pub fn new<I, W>(words: I) -> Result<Self, BodyError>
     where
         I: IntoIterator<Item = W>,
-        W: TryInto<Word, Error = InvalidWordCharError>,
+        W: TryInto<Word, Error = BodyError>,
     {
         let mut body_words = Vec::new();
         for word in words.into_iter() {
@@ -34,6 +39,22 @@ impl Body {
     }
 }
 
+impl TryFrom<Vec<&str>> for Body {
+    type Error = BodyError;
+
+    fn try_from(words: Vec<&str>) -> Result<Body, Self::Error> {
+        Self::new(words)
+    }
+}
+
+impl TryFrom<&[&str]> for Body {
+    type Error = BodyError;
+
+    fn try_from(words: &[&str]) -> Result<Body, Self::Error> {
+        Self::new(words.to_vec())
+    }
+}
+
 impl From<&[Word]> for Body {
     fn from(words: &[Word]) -> Body {
         Self {
@@ -50,9 +71,6 @@ impl From<Vec<Word>> for Body {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-#[derive(Debug, PartialEq)]
-pub struct InvalidWordCharError(pub u8);
-
 /// A unit of transmission.
 #[derive(Debug, PartialEq, Clone)]
 pub struct Word {
@@ -61,14 +79,14 @@ pub struct Word {
 
 impl Word {
     /// Create a word from a UTF8 string.
-    pub fn new(word: &str) -> Result<Self, InvalidWordCharError> {
+    pub fn new(word: &str) -> Result<Self, BodyError> {
         Self::from_bytes(Bytes::from(word.as_bytes()))
     }
 
     /// Create a word from bytes.
-    pub fn from_bytes(bytes: Bytes) -> Result<Self, InvalidWordCharError> {
+    pub fn from_bytes(bytes: Bytes) -> Result<Self, BodyError> {
         if let Some(invalid_char) = bytes.as_ref().iter().find(|b| !Self::is_valid_char(**b)) {
-            Err(InvalidWordCharError(*invalid_char))
+            Err(BodyError::InvalidWordChar(*invalid_char))
         } else {
             Ok(Self { bytes })
         }
@@ -102,25 +120,25 @@ impl AsRef<[u8]> for Word {
 }
 
 impl TryFrom<&str> for Word {
-    type Error = InvalidWordCharError;
+    type Error = BodyError;
 
-    fn try_from(s: &str) -> Result<Self, InvalidWordCharError> {
+    fn try_from(s: &str) -> Result<Self, BodyError> {
         Self::new(s)
     }
 }
 
 impl TryFrom<String> for Word {
-    type Error = InvalidWordCharError;
+    type Error = BodyError;
 
-    fn try_from(s: String) -> Result<Self, InvalidWordCharError> {
+    fn try_from(s: String) -> Result<Self, BodyError> {
         Self::from_bytes(Bytes::from(s))
     }
 }
 
 impl TryFrom<&[u8]> for Word {
-    type Error = InvalidWordCharError;
+    type Error = BodyError;
 
-    fn try_from(s: &[u8]) -> Result<Self, InvalidWordCharError> {
+    fn try_from(s: &[u8]) -> Result<Self, BodyError> {
         Self::from_bytes(Bytes::from(s))
     }
 }

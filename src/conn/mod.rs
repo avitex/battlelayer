@@ -7,7 +7,7 @@ mod socket;
 pub mod packet;
 pub mod respondable;
 
-pub use self::body::{Body, Word};
+pub use self::body::{Body, BodyError, Word};
 pub use self::connection::{Connection, ConnectionBuilder};
 pub use self::error::Error;
 pub use self::handler::{DefaultHandler, Handler, RespondableHandler};

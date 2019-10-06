@@ -1,11 +1,12 @@
 use std::io;
 
-use super::SocketError;
+use super::{BodyError, SocketError};
 use futures_channel::mpsc;
 use tokio_executor::SpawnError;
 
 #[derive(Debug)]
 pub enum Error {
+    Body(BodyError),
     Spawn(SpawnError),
     Socket(SocketError),
     Responder(mpsc::SendError),
@@ -24,5 +25,11 @@ impl From<SocketError> for Error {
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Self {
         SocketError::Io(err).into()
+    }
+}
+
+impl From<BodyError> for Error {
+    fn from(err: BodyError) -> Self {
+        Error::Body(err)
     }
 }
