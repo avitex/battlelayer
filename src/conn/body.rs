@@ -1,5 +1,5 @@
 use std::convert::{TryFrom, TryInto};
-use std::str;
+use std::{str, fmt};
 
 use super::packet;
 use bytes::Bytes;
@@ -11,7 +11,7 @@ pub enum BodyError {
 
 #[derive(Debug, Clone)]
 pub struct Body {
-    words: Vec<Word>,
+    content: Vec<Word>,
 }
 
 impl Body {
@@ -20,22 +20,43 @@ impl Body {
         I: IntoIterator<Item = W>,
         W: TryInto<Word, Error = BodyError>,
     {
-        let mut body_words = Vec::new();
+        let mut content = Vec::new();
         for word in words.into_iter() {
             match word.try_into() {
-                Ok(word) => body_words.push(word),
+                Ok(word) => content.push(word),
                 Err(invalid_char) => return Err(invalid_char),
             }
         }
-        Ok(Self { words: body_words })
+        Ok(Self { content })
     }
 
     pub fn words(&self) -> &[Word] {
-        self.words.as_ref()
+        self.content.as_ref()
     }
 
     pub fn to_vec(self) -> Vec<Word> {
-        self.words
+        self.content
+    }
+}
+
+impl fmt::Display for Body {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        let word_count = self.content.len();
+        for i in 0..word_count  {
+            write!(fmt, "{}", self.content[i].as_str())?;
+            if i < (word_count - 1) {
+                write!(fmt, "; ")?;
+            }
+        }
+        return Ok(())
+    }
+}
+
+impl TryFrom<Vec<String>> for Body {
+    type Error = BodyError;
+
+    fn try_from(words: Vec<String>) -> Result<Body, Self::Error> {
+        Self::new(words)
     }
 }
 
@@ -58,14 +79,14 @@ impl TryFrom<&[&str]> for Body {
 impl From<&[Word]> for Body {
     fn from(words: &[Word]) -> Body {
         Self {
-            words: words.into(),
+            content: words.into(),
         }
     }
 }
 
 impl From<Vec<Word>> for Body {
-    fn from(words: Vec<Word>) -> Body {
-        Self { words }
+    fn from(content: Vec<Word>) -> Body {
+        Self { content }
     }
 }
 

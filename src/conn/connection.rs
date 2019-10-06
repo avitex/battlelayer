@@ -13,7 +13,7 @@ use tower_service::Service;
 
 use super::{
     respondable, Body, BodyError, Error, Handler, Packet, PacketKind, PacketSequence, Request,
-    Respondable, Response, Role, Socket, SocketError, Word,
+    Respondable, Response, Role, Socket, SocketError,
 };
 
 pub struct Connection {
@@ -23,14 +23,14 @@ pub struct Connection {
 
 impl Connection {
     /// Send a request.
-    pub async fn send<B>(&mut self, words: B) -> Result<Vec<Word>, Error>
+    pub async fn send<B>(&mut self, words: B) -> Result<Body, Error>
     where
         B: TryInto<Body, Error = BodyError>,
     {
         let body = words.try_into()?;
         let request = Request { body };
         let response = self.send_request(request).await?;
-        Ok(response.body.to_vec())
+        Ok(response.body)
     }
 
     /// Will resolve once the connection is closed.
