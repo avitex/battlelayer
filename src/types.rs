@@ -16,7 +16,7 @@ pub struct Filename(Word);
 
 /// A clan tag is from 0 to an unknown number of characters in length.
 /// At the time of writing, it is unclear which the allowed characters are.
-pub struct Clantag(Word);
+pub struct ClanTag(Word);
 
 /// The "player name" (referred to as "Soldier name" in-game) is the persona
 /// name which the player chose when logging in to EA Online.
